@@ -1,12 +1,12 @@
 {
   "name": "probot-carbon-copy-content",
   "version": "1.0.0",
-  "description": "Copy content from one repository ",
+  "description": "Edit files in one repo, have them seamlessly copied to other repos as pull requests.",
   "author": "Parker Moore <parkrmoore@gmail.com>",
   "license": "ISC",
-  "repository": "https://github.com/parkr/probot-carbon-copy-content.git",
-  "homepage": "https://github.com/parkr/probot-carbon-copy-content",
-  "bugs": "https://github.com/parkr/probot-carbon-copy-content/issues",
+  "repository": "https://github.com//probot-carbon-copy-content.git",
+  "homepage": "https://github.com//probot-carbon-copy-content",
+  "bugs": "https://github.com//probot-carbon-copy-content/issues",
   "keywords": [
     "probot",
     "github",
@@ -14,7 +14,7 @@
   ],
   "scripts": {
     "dev": "nodemon",
-    "start": "probot-ts run ./src/index.ts",
+    "start": "probot run ./index.js",
     "lint": "standard --fix",
     "test": "jest && standard",
     "test:watch": "jest --watch --notify --notifyMode=change --coverage"
@@ -24,14 +24,10 @@
   },
   "devDependencies": {
     "jest": "^22.4.3",
-    "nock": "^10.0.0",
+    "nock": "^10.0.1",
     "nodemon": "^1.17.2",
-    "probot-ts": "^6.1.0-ts",
     "smee-client": "^1.0.2",
-    "standard": "^10.0.3",
-    "ts-jest": "^23.10.5",
-    "ts-node": "^7.0.1",
-    "typescript": "^3.2.2"
+    "standard": "^10.0.3"
   },
   "engines": {
     "node": ">= 8.3.0"
