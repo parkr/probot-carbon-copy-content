@@ -1,71 +1,19 @@
 const safeLoad = require('js-yaml').safeLoad
+const Buffer = require('buffer').Buffer
 
+const goldenMasterRepoName = 'carbon-copy-content'
 const confFilename = 'carbon-copy.yaml'
 
-// Git Data API use case example
-// See: https://developer.github.com/v3/git/ to learn more
+// For more information on building apps:
+// https://probot.github.io/docs/
+
+// To get your app running against GitHub, see:
+// https://probot.github.io/docs/development/
 module.exports = app => {
-  // Opens a PR every time someone installs your app for the first time
-  app.on('installation.created', check)
-  async function check (context) {
-    // shows all repos you've installed the app on
-    console.log(context.payload.repositories)
-
-    const owner = context.payload.installation.account.login
-    context.payload.repositories.forEach(async (repository) => {
-      const repo = repository.name
-
-      // Generates a random number to ensure the git reference isn't already taken
-      // NOTE: this is not recommended and just shows an example so it can work :)
-
-      // test
-      const branch = `new-branch-${Math.floor(Math.random() * 9999)}`
-
-      // Get current reference in Git
-      const reference = await context.github.gitdata.getRef({
-        repo, // the repo
-        owner, // the owner of the repo
-        ref: 'heads/master'
-      })
-      // Create a branch
-      await context.github.gitdata.createRef({
-        repo,
-        owner,
-        ref: `refs/heads/${branch}`,
-        sha: reference.data.object.sha // accesses the sha from the heads/master reference we got
-      })
-      // create a new file
-      await context.github.repos.createFile({
-        repo,
-        owner,
-        path: 'path/to/your/file.md', // the path to your config file
-        message: 'adds config file', // a commit message
-        content: Buffer.from('My new file is awesome!').toString('base64'),
-        // the content of your file, must be base64 encoded
-        branch // the branch name we used when creating a Git reference
-      })
-      // create a PR from that branch with the commit of our added file
-      await context.github.pullRequests.create({
-        repo,
-        owner,
-        title: 'Adding my file!', // the title of the PR
-        head: branch, // the branch our chances are on
-        base: 'master', // the branch to which you want to merge your changes
-        body: 'Adds my new file!', // the body of your PR,
-        maintainer_can_modify: true // allows maintainers to edit your app's PR
-      })
-    })
-  }
-  // For more information on building apps:
-  // https://probot.github.io/docs/
-
-  // To get your app running against GitHub, see:
-  // https://probot.github.io/docs/development/
   app.on('push', carbonCopyContent)
   async function carbonCopyContent (context) {
     // shows all repos you've installed the app on
     const payload = context.payload
-    const repoID = payload.repository.id
 
     if (payload.repository.name !== 'carbon-copy-content') {
       console.log(`received push event for ${payload.repository.full_name}, ignoring`)
@@ -81,93 +29,78 @@ module.exports = app => {
     // If the configuration file was changed, re-run the entire file.
     // Otherwise, filter to just the files which were changed.
 
-    const allChangedFiles = getChangedFilesFromPush(payload)
-    const conf = await readConfiguration(context, repoID)
+    const conf = await readConfiguration(context)
     if (conf === undefined) {
       console.log(`no configuration could be found at ${confFilename}`)
       return
     }
 
-    console.log('conf:', conf, 'allChangedFiles:', allChangedFiles)
+    const changedFilesInPush = getChangedFilesFromPush(payload)
+    let filesToUpdate
+    if (changedFilesInPush.has(confFilename)) {
+      console.log('the conf file changed, so we are doing EVERYTHING in the conf')
+      filesToUpdate = conf.files.keys()
+    } else {
+      filesToUpdate = [...changedFilesInPush].filter(path => conf.files[path] !== undefined)
+    }
 
-    allChangedFiles.forEach((path) => {
-      const fileConf = conf.files[path]
-      if (conf.files[path] !== undefined) {
-        console.log(conf[path])
-      }
-    })
+    const updates = filesToUpdate.
+      map(path => updateFile(context, conf, path))
 
-    return
-
-    context.payload.payload.repositories.forEach(async (repository) => {
-      const repo = repository.name
-
-      // Generates a random number to ensure the git reference isn't already taken
-      // NOTE: this is not recommended and just shows an example so it can work :)
-
-      // test
-      const branch = `new-branch-${Math.floor(Math.random() * 9999)}`
-
-      // Get current reference in Git
-      const reference = await context.github.gitdata.getRef({
-        repo, // the repo
-        owner, // the owner of the repo
-        ref: 'heads/master'
-      })
-      // Create a branch
-      await context.github.gitdata.createRef({
-        repo,
-        owner,
-        ref: `refs/heads/${branch}`,
-        sha: reference.data.object.sha // accesses the sha from the heads/master reference we got
-      })
-      // create a new file
-      await context.github.repos.createFile({
-        repo,
-        owner,
-        path: 'path/to/your/file.md', // the path to your config file
-        message: 'adds config file', // a commit message
-        content: Buffer.from('My new file is awesome!').toString('base64'),
-        // the content of your file, must be base64 encoded
-        branch // the branch name we used when creating a Git reference
-      })
-      // create a PR from that branch with the commit of our added file
-      await context.github.pullRequests.create({
-        repo,
-        owner,
-        title: 'Adding my file!', // the title of the PR
-        head: branch, // the branch our chances are on
-        base: 'master', // the branch to which you want to merge your changes
-        body: 'Adds my new file!', // the body of your PR,
-        maintainer_can_modify: true // allows maintainers to edit your app's PR
-      })
-    })
+    await Promise.all(updates)
   }
 
-  async function readConfiguration(context, repoID) {
-    const rawConf = await readFileFromGitHub(context, repoID, confFilename)
+  async function readConfiguration(context) {
+    const rawConf = await readFileFromGitHub(context, goldenMasterRepoName, confFilename)
     return safeLoad(rawConf, { filename: confFilename })
   }
 
-  async function readFileFromGitHub(context, repoID, path) {
-    // https://developer.github.com/v3/git/
-    // Get the current commit object
+  async function readFileFromGitHub(context, repo, path) {
+    const data = await readBlobFromGitHub(context, repo, path)
+    if (data === undefined || data.blob === undefined) {
+      console.log(`${repo}: ${path} - not found`)
+      return
+    }
+    return Buffer.from(data.blob.content, data.blob.encoding).toString()
+  }
+
+  async function readBlobFromGitHub(context, repo, path) {
     const owner = context.payload.repository.owner.login
-    const repo = context.payload.repository.name
-    const commit_sha = context.payload.after
+
+    // This is the value that is returned.
+    const data = {
+      ref: undefined,
+      commit: undefined,
+      tree: undefined,
+      blob: undefined
+    }
+
+    // https://developer.github.com/v3/git/
+    // Get the ref
+    const ref = await context.github.gitdata.getRef({owner, repo, ref: `heads/master`})
+    data.ref = ref.data // fill in our return value
+
+    // Get the current commit object
+    const commit_sha = ref.data.object.sha
     const commit = await context.github.gitdata.getCommit({owner, repo, commit_sha})
+    data.commit = commit.data // fill in our return value
 
     // Retrieve the tree it points to
     const tree_sha = commit.data.tree.sha
     const recursive = 1
     const tree = await context.github.gitdata.getTree({owner, repo, tree_sha, recursive})
+    data.tree = tree.data // fill in our return value
 
     // Retrieve the content of the blob object that tree has for that particular file path
     const file = tree.data.tree.filter(file => file.type === 'blob' && file.path === path)[0]
+    if (file === undefined) {
+      return data
+    }
     const file_sha = file.sha
     const blob = await context.github.gitdata.getBlob({owner, repo, file_sha})
+    data.blob = blob.data // fill in our return value
 
-    return Buffer.from(blob.data.content, blob.data.encoding).toString()
+    return data
   }
 
   function getChangedFilesFromPush(pushPayload) {
@@ -177,5 +110,96 @@ module.exports = app => {
       filenames.push(...commit.modified)
     })
     return new Set(filenames)
+  }
+
+  async function updateFile(context, conf, path) {
+    const masterFileContents = await readFileFromGitHub(context, goldenMasterRepoName, path)
+
+    if (masterFileContents === undefined) {
+      console.log(`${context.payload.repository.owner.login}: ${path} - no golden master content`)
+      return
+    }
+
+    const promises = conf.files[path].destination_repos.map(repoNWO => updateFileInRepo(context, conf, path, masterFileContents, repoNWO))
+    return promises
+  }
+
+  async function updateFileInRepo(context, conf, path, masterFileContents, repoNWO) {
+    const [owner, repo] = repoNWO.split('/')
+
+    console.log(`${owner}/${repo}: ${path} - fetching`)
+    let currentFileContents
+    try {
+      currentFileContents = await readFileFromGitHub(context, repo, path)
+    } catch(e) {
+      if (e.code !== 404) {
+        throw e
+      }
+    }
+
+    // We have nothing to do here. Neat.
+    if (currentFileContents === masterFileContents) {
+      console.log(`${owner}/${repo}: ${path} - up to date`)
+      return
+    }
+
+    console.log(`${owner}/${repo}: ${path} - needs updating`)
+
+    const currBlobData = await readBlobFromGitHub(context, repo, path)
+
+    const newBlob = await context.github.gitdata.createBlob({owner, repo,
+      content: Buffer.from(masterFileContents).toString('base64'),
+      encoding: 'base64'
+    })
+
+    const currBlobTreeData = currBlobData.tree.tree.map((obj) => {
+      if (obj.path == path) {
+        return {
+          path: obj.path,
+          mode: obj.mode,
+          type: obj.type,
+          sha: newBlob.data.sha,
+        }
+      } else {
+        return {
+          path: obj.path,
+          mode: obj.mode,
+          type: obj.type,
+          sha: obj.sha,
+        }
+      }
+    })
+    const newTree = await context.github.gitdata.createTree({owner, repo,
+      tree: currBlobTreeData,
+      base_sha: currBlobData.tree.sha,
+    })
+
+    const branch = `probot-carbon-copy-content`
+    let parentCommit
+    try {
+      const branchRef = await context.github.gitdata.getRef({owner, repo, ref: `heads/${branch}`})
+      parentCommit = branchRef.data.object.sha
+    } catch (e) {
+      parentCommit = currBlobData.commit.sha
+    }
+    const newCommit = await context.github.gitdata.createCommit({owner, repo,
+      message: `Automatic update of ${path} from ${owner}/${goldenMasterRepoName}`,
+      tree: newTree.data.sha,
+      parents: [parentCommit],
+    })
+
+    await context.github.gitdata.createRef({owner, repo,
+      ref: `refs/heads/${branch}`,
+      sha: newCommit.data.sha,
+    })
+
+    const pullRequest = await context.github.pullRequests.create({owner, repo,
+      title: 'Updating stock files', // the title of the PR
+      head: branch,
+      base: 'master',
+      maintainer_can_modify: true,
+      body: `Hey! A change was made to the template files which are cloned to other repositories.`,
+    })
+    console.log('New pull request:', pullRequest.data.html_url)
   }
 }
